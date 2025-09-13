@@ -4,25 +4,47 @@ const ctx = canvas.getContext('2d');
 canvas.width = Math.min(window.innerWidth - 40, 1000);
 canvas.height = Math.min(window.innerHeight - 300, 550);
 
+// --- OBSTACLE DEFINITION ---
+function randomObstacle(type, x = canvas.width + 80) {
+    return {
+        x: x,
+        y: Math.random() * (canvas.height - 80) + 40,
+        r: 30 + Math.random() * 20,
+        type
+    };
+}
+const obstacleTypes = ['tree', 'rock', 'tree', 'rock', 'tree', 'rock'];
+let obstacles = obstacleTypes.map(type => randomObstacle(type));
 
 // --- 2. DRONE CLASS DEFINITION ---
 class Drone {
     constructor(id, x, y) {
         this.id = id;
+        this.baseX = x;
         this.x = x;
         this.y = y;
-        this.radius = 12; // Slightly larger to fit text
-        this.status = 'HEALTHY'; // 'HEALTHY', 'JAMMED', or 'HIJACKED'
-        this.jammedDuration = 5 * 60; // 5 seconds at 60 frames per second
-        this.recoveryTimer = 0;
-        this.vx = (Math.random() - 0.5) * 1.5;
-        this.vy = (Math.random() - 0.5) * 1.5;
+        this.altitude = 100 + Math.random() * 50;
+        this.radius = 12;
+        this.status = 'HEALTHY';
+        this.battery = 100;
+        this.lidar = true;
+        this.barometer = true;
+        this.thermal = true;
+        this.speed = 1.0 + Math.random() * 0.5;
+        this.camera = true;
+        this.distanceTravelled = 0;
+        this.path = [{ x: this.x, y: this.y }];
+        this.vy = 0;
+        this.phase = Math.random() * Math.PI * 2; // For horizontal drift
     }
 
     draw() {
-        // Draw the circle
+        ctx.save();
+        ctx.translate(this.x, this.y);
+
+        // Body
         ctx.beginPath();
-        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, 10, 6, 0, 0, Math.PI * 2);
         switch (this.status) {
             case 'HEALTHY': ctx.fillStyle = '#28a745'; break;
             case 'JAMMED': ctx.fillStyle = '#dc3545'; break;
@@ -30,244 +52,250 @@ class Drone {
         }
         ctx.fill();
         ctx.closePath();
-        
-        // --- NEW: Draw the drone ID text ---
-        ctx.fillStyle = '#ffffff';
+
+        // Rotors (propellers) - white
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(-12, -6, 4, 0, Math.PI * 2); ctx.stroke(); ctx.closePath();
+        ctx.beginPath(); ctx.arc(12, -6, 4, 0, Math.PI * 2); ctx.stroke(); ctx.closePath();
+        ctx.beginPath(); ctx.arc(-12, 6, 4, 0, Math.PI * 2); ctx.stroke(); ctx.closePath();
+        ctx.beginPath(); ctx.arc(12, 6, 4, 0, Math.PI * 2); ctx.stroke(); ctx.closePath();
+
+        // Drone ID
+        ctx.fillStyle = '#fff';
         ctx.font = 'bold 10px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(this.id, this.x, this.y);
+        ctx.fillText(this.id, 0, 0);
+
+        ctx.restore();
     }
 
-    update() {
-        if (this.status === 'JAMMED') {
-            this.recoveryTimer--;
-            if (this.recoveryTimer <= 0) {
-                this.status = 'HEALTHY';
+    update(swarm, frameCount) {
+        // Gentle horizontal drift
+        this.x = this.baseX + Math.sin(frameCount / 60 + this.phase) * 18;
+
+        // Drones stay at fixed x position (left-middle), only drift up/down to avoid obstacles and other drones
+        let avoidY = 0;
+        for (const obs of obstacles) {
+            const dx = obs.x - this.x;
+            const dy = obs.y - this.y;
+            const dist = Math.hypot(dx, dy);
+            if (dx > 0 && dx < 80 && dist < obs.r + this.radius + 30) {
+                // If obstacle is ahead and close, drift up or down smoothly
+                avoidY += dy > 0 ? -1.2 : 1.2;
             }
         }
-        this.x += this.vx;
+
+        // Drone-to-drone avoidance
+        for (const other of swarm) {
+            if (other !== this) {
+                const dy = other.y - this.y;
+                const dx = other.x - this.x;
+                const dist = Math.hypot(dx, dy);
+                if (Math.abs(dx) < 40 && dist < this.radius * 2.5) {
+                    // If another drone is too close, drift away
+                    avoidY += dy > 0 ? -1.5 : 1.5;
+                }
+            }
+        }
+
+        // Apply avoidance (limit vertical speed for smoothness)
+        this.vy = Math.max(-2, Math.min(2, avoidY));
         this.y += this.vy;
-        if (this.x < this.radius || this.x > canvas.width - this.radius) this.vx *= -1;
-        if (this.y < this.radius || this.y > canvas.height - this.radius) this.vy *= -1;
+        this.y = Math.max(this.radius, Math.min(canvas.height - this.radius, this.y));
+        this.battery = Math.max(0, this.battery - 0.01 * this.speed); // Battery drain
+        this.path.push({ x: this.x, y: this.y });
+    }
+
+    getDistances() {
+        // Distance to obstacles
+        const obstacleDistances = obstacles.map(obs => ({
+            type: obs.type,
+            distance: Math.hypot(this.x - obs.x, this.y - obs.y)
+        }));
+        // Distance to other drones
+        const droneDistances = swarm.map(d => ({
+            id: d.id,
+            distance: Math.hypot(this.x - d.x, this.y - d.y)
+        }));
+        return { obstacleDistances, droneDistances };
     }
 }
-
 
 // --- 3. SWARM INITIALIZATION ---
 const swarm = [];
-const numDrones = 25;
-const communicationRange = 150;
+const numDrones = 15;
+const startX = canvas.width * 0.25; // Drones start left-middle
+const startY = canvas.height / 2;
 for (let i = 0; i < numDrones; i++) {
-    swarm.push(new Drone(i, Math.random() * (canvas.width - 20) + 10, Math.random() * (canvas.height - 20) + 10));
+    swarm.push(new Drone(
+        i,
+        startX,
+        startY + (i - numDrones / 2) * 30
+    ));
 }
-const startDrone = swarm[0];
-const endDrone = swarm[numDrones - 1];
-let currentPath = null;
 
+// --- 4. DRAW CONNECTIONS ---
+function drawConnections() {
+    ctx.save();
+    ctx.lineWidth = 2;
+    for (let i = 0; i < swarm.length; i++) {
+        const droneA = swarm[i];
+        if (droneA.status === 'JAMMED') continue; // Jammed drones have no connections
 
-// --- 4. PATHFINDING ALGORITHM (BFS) ---
-function findShortestPath(graph, startId, endId) {
-    if (!graph[startId] || !graph[endId]) return null;
-    const queue = [ [startId] ];
-    const visited = new Set([startId]);
-    while (queue.length > 0) {
-        const path = queue.shift();
-        const nodeId = path[path.length - 1];
-        if (nodeId === endId) return path;
-        (graph[nodeId] || []).forEach(neighbor => {
-            if (!visited.has(neighbor)) {
-                visited.add(neighbor);
-                const newPath = [...path, neighbor];
-                queue.push(newPath);
+        // Find nearest neighbor that is not jammed
+        let minDist = Infinity;
+        let nearest = null;
+        for (let j = 0; j < swarm.length; j++) {
+            if (i === j) continue;
+            const droneB = swarm[j];
+            if (droneB.status === 'JAMMED') continue; // Don't connect to jammed drones
+            const dist = Math.hypot(droneA.x - droneB.x, droneA.y - droneB.y);
+            if (dist < minDist) {
+                minDist = dist;
+                nearest = droneB;
             }
-        });
+        }
+        if (nearest) {
+            ctx.strokeStyle = droneA.status === 'HIJACKED' ? 'rgba(111,66,193,0.7)' : 'rgba(0,200,255,0.7)';
+            ctx.beginPath();
+            ctx.moveTo(droneA.x, droneA.y);
+            ctx.lineTo(nearest.x, nearest.y);
+            ctx.stroke();
+        }
     }
-    return null;
+    ctx.restore();
 }
-
 
 // --- 5. MAIN ANIMATION LOOP ---
+let frameCount = 0;
 function animate() {
+    frameCount++;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const fullAdjacencyList = {};
-    const trustedAdjacencyList = {};
-    swarm.forEach(drone => {
-        fullAdjacencyList[drone.id] = [];
-        if (drone.status === 'HEALTHY') trustedAdjacencyList[drone.id] = [];
+
+    // Move obstacles to the left for side-scrolling effect
+    for (let obs of obstacles) {
+        obs.x -= 1.0; // Scroll speed
+    }
+    // Remove obstacles that have moved off screen and add new ones
+    while (obstacles.length < 6) {
+        obstacles.push(randomObstacle(obstacleTypes[obstacles.length % obstacleTypes.length]));
+    }
+    obstacles = obstacles.filter(obs => obs.x > -100);
+
+    // Draw obstacles
+    obstacles.forEach(obs => {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(obs.x, obs.y, obs.r, 0, Math.PI * 2);
+        ctx.fillStyle = obs.type === 'tree' ? '#228B22' : '#8B7B6B';
+        ctx.globalAlpha = 0.7;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.font = 'bold 12px sans-serif';
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'center';
+        ctx.fillText(obs.type.toUpperCase(), obs.x, obs.y);
+        ctx.restore();
     });
-    for (let i = 0; i < swarm.length; i++) {
-        for (let j = i + 1; j < swarm.length; j++) {
-            const d1 = swarm[i];
-            const d2 = swarm[j];
-            const distance = Math.hypot(d1.x - d2.x, d1.y - d2.y);
-            if (distance < communicationRange) {
-                if (d1.status !== 'JAMMED' && d2.status !== 'JAMMED') {
-                    fullAdjacencyList[d1.id].push(d2.id);
-                    fullAdjacencyList[d2.id].push(d1.id);
-                }
-                if (d1.status === 'HEALTHY' && d2.status === 'HEALTHY') {
-                    trustedAdjacencyList[d1.id].push(d2.id);
-                    trustedAdjacencyList[d2.id].push(d1.id);
-                }
-            }
-        }
-    }
-    
-    ctx.strokeStyle = 'rgba(139, 148, 158, 0.2)';
-    ctx.lineWidth = 1;
-    for (const id in fullAdjacencyList) {
-        const drone1 = swarm[id];
-        fullAdjacencyList[id].forEach(neighborId => {
-            const drone2 = swarm[neighborId];
-            ctx.beginPath();
-            ctx.moveTo(drone1.x, drone1.y);
-            ctx.lineTo(drone2.x, drone2.y);
-            ctx.stroke();
-        });
-    }
-    
-    currentPath = findShortestPath(trustedAdjacencyList, startDrone.id, endDrone.id);
-    if (currentPath) {
-        ctx.strokeStyle = '#28a745';
-        ctx.lineWidth = 4;
-        ctx.lineCap = 'round';
-        for (let i = 0; i < currentPath.length - 1; i++) {
-            const drone1 = swarm[currentPath[i]];
-            const drone2 = swarm[currentPath[i + 1]];
-            ctx.beginPath();
-            ctx.moveTo(drone1.x, drone1.y);
-            ctx.lineTo(drone2.x, drone2.y);
-            ctx.stroke();
-        }
-    }
-    
-    swarm.forEach(drone => { drone.update(); drone.draw(); });
-    
-    ctx.fillStyle = '#c9d1d9';
-    ctx.font = 'bold 14px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('START', startDrone.x, startDrone.y - 22);
-    ctx.fillText('END', endDrone.x, endDrone.y + 22);
-    
+
+    // Draw connections
+    drawConnections();
+
+    // Move and draw drones
+    swarm.forEach(drone => {
+        drone.update(swarm, frameCount);
+        drone.draw();
+    });
+
     requestAnimationFrame(animate);
 }
 
-
-// --- 6. EVENT LISTENERS FOR CONTROLS ---
+// --- 6. JAM & HACK BUTTONS ---
 const jamButton = document.getElementById('jam-button');
+const jamInput = document.getElementById('jam-id-input');
+jamButton.addEventListener('click', function () {
+    let id = parseInt(jamInput.value, 10);
+    if (isNaN(id)) {
+        // Random drone
+        id = Math.floor(Math.random() * swarm.length);
+    }
+    if (id >= 0 && id < swarm.length) {
+        swarm[id].status = 'JAMMED';
+    }
+});
+
 const hackButton = document.getElementById('hack-button');
+const hackInput = document.getElementById('hack-id-input');
+hackButton.addEventListener('click', function () {
+    let id = parseInt(hackInput.value, 10);
+    if (isNaN(id)) {
+        // Random drone
+        id = Math.floor(Math.random() * swarm.length);
+    }
+    if (id >= 0 && id < swarm.length) {
+        swarm[id].status = 'HIJACKED';
+    }
+});
+
 const restoreButton = document.getElementById('restore-button');
-const briefingButton = document.getElementById('ai-briefing-button');
-const aiResponseDiv = document.getElementById('ai-response');
-
-const jamIdInput = document.getElementById('jam-id-input');
-const hackIdInput = document.getElementById('hack-id-input');
-
-jamButton.addEventListener('click', () => {
-    const targetIdStr = jamIdInput.value;
-    let targetDrone = null;
-
-    if (targetIdStr) { // If there's input, target specifically
-        const targetId = parseInt(targetIdStr);
-        if (!isNaN(targetId) && targetId >= 0 && targetId < numDrones) {
-            targetDrone = swarm.find(d => d.id === targetId);
-        }
-    } else { // If input is empty, target randomly on the path
-        if (currentPath && currentPath.length > 2) {
-            const randomIndexInPath = Math.floor(Math.random() * (currentPath.length - 2)) + 1;
-            const randomId = currentPath[randomIndexInPath];
-            targetDrone = swarm.find(d => d.id === randomId);
-        }
-    }
-
-    // Perform the action if a valid target was found
-    if (targetDrone && targetDrone.status === 'HEALTHY' && targetDrone.id !== startDrone.id && targetDrone.id !== endDrone.id) {
-        targetDrone.status = 'JAMMED';
-        targetDrone.recoveryTimer = targetDrone.jammedDuration;
-        jamIdInput.value = ''; // Clear input after action
-    }
+restoreButton.addEventListener('click', function () {
+    swarm.forEach(drone => drone.status = 'HEALTHY');
 });
 
-hackButton.addEventListener('click', () => {
-    const targetIdStr = hackIdInput.value;
-    let targetDrone = null;
+// --- 7. SEARCH BUTTON FOR DRONE INFO ---
+const searchButton = document.getElementById('drone-search-button');
+const searchInput = document.getElementById('drone-search-input');
 
-    if (targetIdStr) { // If there's input, target specifically
-        const targetId = parseInt(targetIdStr);
-        if (!isNaN(targetId) && targetId >= 0 && targetId < numDrones) {
-            targetDrone = swarm.find(d => d.id === targetId);
-        }
-    } else { // If input is empty, target randomly on the path
-        if (currentPath && currentPath.length > 2) {
-            const randomIndexInPath = Math.floor(Math.random() * (currentPath.length - 2)) + 1;
-            const randomId = currentPath[randomIndexInPath];
-            targetDrone = swarm.find(d => d.id === randomId);
-        }
+searchButton.addEventListener('click', function () {
+    const id = parseInt(searchInput.value, 10);
+    if (isNaN(id) || id < 0 || id >= swarm.length) {
+        showDroneInfo(null);
+        return;
     }
-    
-    // Perform the action if a valid target was found
-    if (targetDrone && targetDrone.status === 'HEALTHY' && targetDrone.id !== startDrone.id && targetDrone.id !== endDrone.id) {
-        targetDrone.status = 'HIJACKED';
-        hackIdInput.value = ''; // Clear input after action
-    }
+    showDroneInfo(swarm[id]);
 });
 
-restoreButton.addEventListener('click', () => {
-    swarm.forEach(drone => {
-        drone.status = 'HEALTHY';
-        drone.recoveryTimer = 0;
-    });
-});
-
-briefingButton.addEventListener('click', getAIBriefing);
-
-
-// --- 7. GEMINI API INTEGRATION ---
-async function getAIBriefing() {
-    briefingButton.disabled = true;
-    aiResponseDiv.textContent = 'Analyzing swarm... Contacting HYDRA Command...';
-    const healthyCount = swarm.filter(d => d.status === 'HEALTHY').length;
-    const jammedCount = swarm.filter(d => d.status === 'JAMMED').length;
-    const hijackedCount = swarm.filter(d => d.status === 'HIJACKED').length;
-    const pathExists = currentPath !== null;
-
-    const systemPrompt = `You are an AI military strategist named 'HYDRA Command'. Your mission is to analyze drone swarm data and provide a concise, tactical briefing in 2-3 sentences. Do not use markdown or lists. Be direct and authoritative.`;
-    const userQuery = `Current Swarm Status Report:
-- Total Drones: ${numDrones}
-- Healthy: ${healthyCount}
-- Jammed: ${jammedCount}
-- Hijacked: ${hijackedCount}
-- Primary Communication Link: ${pathExists ? 'Active' : 'Compromised'}
-
-Provide your tactical assessment and one recommendation.`;
-    
-    const apiKey = "";
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-0.5-20:generateContent?key=${apiKey}`;
-
-    const payload = {
-        contents: [{ parts: [{ text: userQuery }] }],
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-    };
-
-    try {
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
-        const result = await response.json();
-        const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        aiResponseDiv.textContent = text || 'Could not retrieve briefing from HYDRA Command. Response was empty.';
-    } catch (error) {
-        console.error("Gemini API call failed:", error);
-        aiResponseDiv.textContent = 'Error: Communication with HYDRA Command failed. Check console for details.';
-    } finally {
-        briefingButton.disabled = false;
+// --- 8. POPUP FUNCTION ---
+function showDroneInfo(drone) {
+    const infoDiv = document.getElementById('drone-info-popup');
+    if (!drone) {
+        infoDiv.innerHTML = `<strong>Drone not found.</strong>`;
+        infoDiv.style.display = 'block';
+        return;
     }
+    const { obstacleDistances, droneDistances } = drone.getDistances();
+    let infoHtml = `
+        <strong>Drone ${drone.id}</strong><br>
+        Battery: ${drone.battery.toFixed(1)}%<br>
+        Coordinates: (${drone.x.toFixed(1)}, ${drone.y.toFixed(1)})<br>
+        Altitude: ${drone.altitude.toFixed(1)}m<br>
+        Status: ${drone.status}<br>
+        Lidar: ${drone.lidar ? 'OK' : 'Fail'}<br>
+        Barometer: ${drone.barometer ? 'OK' : 'Fail'}<br>
+        Thermal: ${drone.thermal ? 'OK' : 'Fail'}<br>
+        Speed: ${drone.speed ? drone.speed.toFixed(2) : 'N/A'} px/frame<br>
+        Camera: ${drone.camera ? 'OK' : 'Fail'}<br>
+        Distance Travelled: ${drone.distanceTravelled ? drone.distanceTravelled.toFixed(1) : 'N/A'} px<br>
+        <hr>
+        <strong>Distance to Obstacles:</strong><br>
+        ${obstacleDistances.map(o => `${o.type}: ${o.distance.toFixed(1)} px`).join('<br>')}
+        <hr>
+        <strong>Distance to Other Drones:</strong><br>
+        ${droneDistances.map(d => `Drone ${d.id}: ${d.distance.toFixed(1)} px`).join('<br>')}
+    `;
+    infoDiv.innerHTML = infoHtml;
+    infoDiv.style.display = 'block';
 }
 
-// Start the simulation
+// --- 9. CLOSE POPUP ON OUTSIDE CLICK ---
+document.addEventListener('click', function (e) {
+    const infoDiv = document.getElementById('drone-info-popup');
+    if (infoDiv.style.display === 'block' && !searchButton.contains(e.target) && !searchInput.contains(e.target)) {
+        infoDiv.style.display = 'none';
+    }
+});
+
+// --- 10. START ANIMATION ---
 animate();

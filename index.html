@@ -21,14 +21,21 @@
             <input type="number" id="hack-id-input" class="id-input" placeholder="ID or Random">
             <button id="hack-button" class="control-button">Hack Drone</button>
         </div>
-         <div class="control-group">
+        <div class="control-group">
             <button id="restore-button" class="control-button">Restore All</button>
-            <button id="ai-briefing-button" class="control-button">✨ Get AI Briefing</button>
         </div>
     </div>
-    <div id="ai-response">AI Advisor standing by...</div>
 
+    <!-- Add the canvas for drones and obstacles -->
     <canvas id="swarmCanvas"></canvas>
+
+    <!-- Search for drone info -->
+    <div class="search-container" style="margin-top:16px;">
+        <input type="number" id="drone-search-input" placeholder="Enter Drone ID" style="width:120px;">
+        <button id="drone-search-button">Search Drone Info</button>
+    </div>
+
+    <div id="drone-info-popup" style="display:none;position:absolute;top:80px;left:40px;background:#222;color:#fff;padding:16px;border-radius:8px;z-index:10;max-width:300px;"></div>
 
     <!-- Link to the external JavaScript file -->
     <script src="script.js"></script>
