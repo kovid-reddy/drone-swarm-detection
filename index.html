@@ -11,13 +11,22 @@
 
 <body>
     <h1>Project Hydra: Resilient Swarm Network</h1>
-    <p>Single-click to JAM a drone (recovers automatically). Double-click to HIJACK it (ejected by the swarm).</p>
+    <p>Use the buttons below to command the swarm. Leave input fields blank for random targets.</p>
 
-    <!-- AI Advisor UI Elements -->
-    <div id="ai-controls">
-        <button id="ai-briefing-button">✨ Get AI Mission Briefing</button>
-        <div id="ai-response">AI Advisor standing by. Analyze the swarm's status to receive a briefing...</div>
+    <!-- --- UI for Controls --- -->
+    <div class="controls-container">
+        <div class="control-group">
+            <input type="number" id="jam-id-input" class="id-input" placeholder="ID or Random">
+            <button id="jam-button" class="control-button">Jam Drone</button>
+            <input type="number" id="hack-id-input" class="id-input" placeholder="ID or Random">
+            <button id="hack-button" class="control-button">Hack Drone</button>
+        </div>
+         <div class="control-group">
+            <button id="restore-button" class="control-button">Restore All</button>
+            <button id="ai-briefing-button" class="control-button">✨ Get AI Briefing</button>
+        </div>
     </div>
+    <div id="ai-response">AI Advisor standing by...</div>
 
     <canvas id="swarmCanvas"></canvas>
 
